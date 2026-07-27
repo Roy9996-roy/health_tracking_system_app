@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - HealthTrack{% endblock %}
+{% block content %}
+
+<h1 class="page-title">Your Health Dashboard</h1>
+
+{% if alerts %}
+<div class="alerts-panel">
+    <h2> Active Alerts</h2>
+    {% for a in alerts %}
+    <div class="alert-item alert-{{ a['severity'] }}">
+        <span>{{ a['message'] }}</span>
+        <form method="POST" action="{{ url_for('ack_alert', alert_id=a['id']) }}">
+            <button type="submit" class="btn-small">Dismiss</button>
+        </form>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">Steps (latest)</div>
+        <div class="stat-value">{{ latest['steps'] if latest and latest['steps'] is not none else '—' }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Heart Rate</div>
+        <div class="stat-value">{{ latest['heart_rate'] if latest and latest['heart_rate'] is not none else '—' }} <span class="unit">bpm</span></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Blood Pressure</div>
+        <div class="stat-value">
+            {% if latest and latest['bp_systolic'] %}{{ latest['bp_systolic'] }}/{{ latest['bp_diastolic'] }}{% else %}—{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Sleep</div>
+        <div class="stat-value">{{ latest['sleep_hours'] if latest and latest['sleep_hours'] is not none else '—' }} <span class="unit">hrs</span></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Weight</div>
+        <div class="stat-value">{{ latest['weight_kg'] if latest and latest['weight_kg'] is not none else '—' }} <span class="unit">kg</span></div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Calories</div>
+        <div class="stat-value">{{ latest['calories'] if latest and latest['calories'] is not none else '—' }}</div>
+    </div>
+</div>
+
+<div class="insights-panel">
+    <h2> Personalized Insights</h2>
+    <ul>
+        {% for insight in insights %}
+        <li>{{ insight }}</li>
+        {% endfor %}
+    </ul>
+</div>
+
+<div class="charts-grid">
+    <div class="chart-card">
+        <h3>Steps &amp; Sleep</h3>
+        <canvas id="activityChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>Heart Rate &amp; Blood Pressure</h3>
+        <canvas id="vitalsChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <h3>Weight Trend</h3>
+        <canvas id="weightChart"></canvas>
+    </div>
+</div>
+
+<a href="{{ url_for('new_entry') }}" class="btn-primary btn-fab">+ Log Today's Entry</a>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const chartData = {{ chart_data | tojson }};
+
+new Chart(document.getElementById('activityChart'), {
+    type: 'bar',
+    data: {
+        labels: chartData.labels,
+        datasets: [
+            { label: 'Steps', data: chartData.steps, backgroundColor: '#2d9c8f', yAxisID: 'y' },
+        ]
+    },
+    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+});
+
+new Chart(document.getElementById('vitalsChart'), {
+    type: 'line',
+    data: {
+        labels: chartData.labels,
+        datasets: [
+            { label: 'Heart Rate (bpm)', data: chartData.heart_rate, borderColor: '#e2593a', tension: 0.3 },
+            { label: 'Systolic BP', data: chartData.bp_systolic, borderColor: '#4a6fa5', tension: 0.3 },
+            { label: 'Diastolic BP', data: chartData.bp_diastolic, borderColor: '#8ab6d6', tension: 0.3 },
+        ]
+    },
+    options: { responsive: true }
+});
+
+new Chart(document.getElementById('weightChart'), {
+    type: 'line',
+    data: {
+        labels: chartData.labels,
+        datasets: [
+            { label: 'Weight (kg)', data: chartData.weight, borderColor: '#7a5c9e', tension: 0.3, fill: true, backgroundColor: 'rgba(122,92,158,0.1)' },
+        ]
+    },
+    options: { responsive: true }
+});
+</script>
+{% endblock %}

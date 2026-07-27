@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Log Entry - HealthTrack{% endblock %}
+{% block content %}
+<div class="form-card">
+    <h1>Log Today's Health Data</h1>
+    <p class="subtitle">This is standing in for automatic wearable-device sync — enter readings manually for now.</p>
+    <form method="POST">
+        <label>Date</label>
+        <input type="date" name="entry_date" value="{{ today }}" required>
+
+        <div class="form-grid">
+            <div>
+                <label>Steps</label>
+                <input type="number" name="steps" min="0" placeholder="e.g. 8000">
+            </div>
+            <div>
+                <label>Heart Rate (bpm)</label>
+                <input type="number" name="heart_rate" min="0" placeholder="e.g. 72">
+            </div>
+            <div>
+                <label>Blood Pressure — Systolic</label>
+                <input type="number" name="bp_systolic" min="0" placeholder="e.g. 120">
+            </div>
+            <div>
+                <label>Blood Pressure — Diastolic</label>
+                <input type="number" name="bp_diastolic" min="0" placeholder="e.g. 80">
+            </div>
+            <div>
+                <label>Sleep (hours)</label>
+                <input type="number" name="sleep_hours" step="0.1" min="0" placeholder="e.g. 7.5">
+            </div>
+            <div>
+                <label>Weight (kg)</label>
+                <input type="number" name="weight_kg" step="0.1" min="0" placeholder="e.g. 70.5">
+            </div>
+            <div>
+                <label>Calories Consumed</label>
+                <input type="number" name="calories" min="0" placeholder="e.g. 2100">
+            </div>
+        </div>
+
+        <button type="submit" class="btn-primary">Save Entry</button>
+    </form>
+</div>
+{% endblock %}
