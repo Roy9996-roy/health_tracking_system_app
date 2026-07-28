@@ -5,37 +5,74 @@ Based on: HEALTH_TRACKING_SYSTEM_PROJECT_PROPOSAL (Roy Mwaura Maina, KCA Univers
 A working prototype covering the proposal's core software components:
  - User registration / login
  - Health data tracking (activity, heart rate, blood pressure, sleep, weight, nutrition)
- - Cloud-style central storage (SQLite database - swap for MySQL/PostgreSQL in production)
+ - Cloud-style central storage (Turso / libSQL - a hosted, SQLite-compatible database)
  - Data processing & analytics (trends, averages)
  - Real-time notifications & alerts (rule-based health flags)
  - Personalized health insights
+
+NOTE ON DATABASE:
+Vercel's serverless functions run on a READ-ONLY filesystem (except /tmp, which is
+ephemeral and not shared across invocations). A local SQLite file cannot be used for
+real persistence there. This version uses Turso (hosted libSQL, SQLite-compatible)
+so the same SQL and mostly the same code works locally AND in production.
+
+Required environment variables (set locally in a .env file or shell, and in
+Vercel under Project Settings -> Environment Variables):
+    TURSO_DATABASE_URL   e.g. libsql://your-db-name-yourorg.turso.io
+    TURSO_AUTH_TOKEN     token generated via `turso db tokens create <db-name>`
 """
 
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3
+import libsql_experimental as libsql
 import os
 from datetime import datetime, timedelta
+from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = "dev-secret-key-change-in-production"
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "health_tracker.db")
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+
+_db_ready = False  # guards against re-running init_db() on every warm invocation
 
 
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    """
+    Open a connection to the remote Turso database.
+    Requires TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to be set as environment
+    variables. Falls back to a local file 'health_tracker.db' ONLY for quick
+    local testing when those variables are absent (not suitable for Vercel).
+    """
+    if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+        return libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+    # Local fallback (dev machine only - will NOT work on Vercel)
+    return libsql.connect("health_tracker.db")
+
+
+def _fetchall_dicts(cursor):
+    """Convert cursor results into a list of dicts so templates can keep
+    using row["field"] the same way they did with sqlite3.Row."""
+    columns = [d[0] for d in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _fetchone_dict(cursor):
+    columns = [d[0] for d in cursor.description]
+    row = cursor.fetchone()
+    return dict(zip(columns, row)) if row else None
 
 
 def init_db():
+    global _db_ready
+    if _db_ready:
+        return
     conn = get_db()
-    conn.executescript("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -43,8 +80,9 @@ def init_db():
         password_hash TEXT NOT NULL,
         age INTEGER,
         created_at TEXT NOT NULL
-    );
-
+    )
+    """)
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -58,8 +96,9 @@ def init_db():
         calories INTEGER,
         created_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
-
+    )
+    """)
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -69,10 +108,16 @@ def init_db():
         created_at TEXT NOT NULL,
         acknowledged INTEGER DEFAULT 0,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    );
+    )
     """)
     conn.commit()
-    conn.close()
+    _db_ready = True
+
+
+# Ensure tables exist as soon as the module is imported - this runs both
+# locally (python app.py) AND on Vercel (which imports `app` directly and
+# never hits the `if __name__ == "__main__"` block below).
+init_db()
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +197,6 @@ def generate_insights(rows):
 # Auth helpers
 # ---------------------------------------------------------------------------
 def login_required(f):
-    from functools import wraps
-
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
@@ -186,9 +229,9 @@ def register():
             return render_template("register.html")
 
         conn = get_db()
-        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        cur = conn.execute("SELECT id FROM users WHERE email = ?", (email,))
+        existing = _fetchone_dict(cur)
         if existing:
-            conn.close()
             flash("An account with that email already exists.", "error")
             return render_template("register.html")
 
@@ -197,7 +240,6 @@ def register():
             (name, email, generate_password_hash(password), age, datetime.now().isoformat()),
         )
         conn.commit()
-        conn.close()
         flash("Account created. Please log in.", "success")
         return redirect(url_for("login"))
 
@@ -211,8 +253,8 @@ def login():
         password = request.form["password"]
 
         conn = get_db()
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-        conn.close()
+        cur = conn.execute("SELECT * FROM users WHERE email = ?", (email,))
+        user = _fetchone_dict(cur)
 
         if user and check_password_hash(user["password_hash"], password):
             session["user_id"] = user["id"]
@@ -234,15 +276,17 @@ def logout():
 @login_required
 def dashboard():
     conn = get_db()
-    rows = conn.execute(
+    cur = conn.execute(
         "SELECT * FROM entries WHERE user_id = ? ORDER BY entry_date DESC LIMIT 30",
         (session["user_id"],),
-    ).fetchall()
-    alerts = conn.execute(
+    )
+    rows = _fetchall_dicts(cur)
+
+    cur = conn.execute(
         "SELECT * FROM alerts WHERE user_id = ? AND acknowledged = 0 ORDER BY created_at DESC LIMIT 10",
         (session["user_id"],),
-    ).fetchall()
-    conn.close()
+    )
+    alerts = _fetchall_dicts(cur)
 
     latest = rows[0] if rows else None
     insights = generate_insights(rows)
@@ -294,7 +338,14 @@ def new_entry():
                 data["calories"], datetime.now().isoformat(),
             ),
         )
-        entry_id = cur.lastrowid
+
+        # Fetch the id of the entry we just inserted
+        cur2 = conn.execute(
+            "SELECT id FROM entries WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (session["user_id"],),
+        )
+        entry_row = _fetchone_dict(cur2)
+        entry_id = entry_row["id"] if entry_row else None
 
         # Real-time alert generation
         for severity, message in evaluate_entry(data):
@@ -304,7 +355,6 @@ def new_entry():
             )
 
         conn.commit()
-        conn.close()
         flash("Entry logged.", "success")
         return redirect(url_for("dashboard"))
 
@@ -320,7 +370,6 @@ def ack_alert(alert_id):
         (alert_id, session["user_id"]),
     )
     conn.commit()
-    conn.close()
     return redirect(url_for("dashboard"))
 
 
@@ -328,11 +377,11 @@ def ack_alert(alert_id):
 @login_required
 def history():
     conn = get_db()
-    rows = conn.execute(
+    cur = conn.execute(
         "SELECT * FROM entries WHERE user_id = ? ORDER BY entry_date DESC",
         (session["user_id"],),
-    ).fetchall()
-    conn.close()
+    )
+    rows = _fetchall_dicts(cur)
     return render_template("history.html", rows=rows)
 
 
@@ -354,6 +403,6 @@ def _to_float(v):
 
 
 if __name__ == "__main__":
-    init_db()
     print("\nHealth Tracking System running at http://127.0.0.1:5000\n")
     app.run(debug=True, port=5000)
+   
